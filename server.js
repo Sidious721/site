@@ -2,12 +2,24 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const nodemailer = require('nodemailer');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
 const RFQ_TO_EMAIL = process.env.RFQ_TO_EMAIL || 'a.egorov@logiq-freight.com';
+
+// ВАЖНО: письма отправляются через HTTP API Resend (api.resend.com), а НЕ через
+// прямой SMTP. Причина: у бесплатных тарифов большинства облачных хостингов
+// (в том числе Render, с сентября 2025) исходящий SMTP-трафик (порты 25/465/587)
+// заблокирован на уровне платформы ради борьбы со спамом — с любыми, даже
+// полностью верными данными, письмо через прямой SMTP оттуда física не уйдёт,
+// соединение будет просто "молча висеть". HTTP API работает через порт 443
+// (обычный HTTPS), который никто не блокирует.
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
+// До подтверждения собственного домена в Resend можно слать с их тестового
+// адреса onboarding@resend.dev — это ограничение только на адрес ОТПРАВИТЕЛЯ,
+// присылать письма можно на любой РЕАЛЬНЫЙ адрес получателя без ограничений.
+const FROM_EMAIL = process.env.FROM_EMAIL || 'LogiQ — заявки с сайта <onboarding@resend.dev>';
 
 app.use(cors({ origin: ALLOWED_ORIGIN }));
 
@@ -25,27 +37,51 @@ const upload = multer({
   },
 });
 
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: Number(process.env.SMTP_PORT) || 587,
-  secure: process.env.SMTP_SECURE === 'true', // true для 465, false для 587 (STARTTLS)
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-});
+// Отправка через Resend HTTP API с собственным тайм-аутом — если Resend вдруг
+// не ответит, backend не зависнет молча, а вернёт понятную ошибку через 20 сек.
+async function sendMailViaResend({ to, from, replyTo, subject, text, attachments }, timeoutMs) {
+  if (!RESEND_API_KEY) {
+    throw new Error('resend_not_configured');
+  }
 
-// Если SMTP-сервер не отвечает вовсе (например, хостинг блокирует исходящий
-// порт файрволом) — обычное TCP-соединение может "висеть" несколько минут,
-// прежде чем ОС сама признает таймаут. Это выглядело бы как вечное зависание
-// формы на сайте. Поэтому ограничиваем ожидание сами.
-function sendMailWithTimeout(mailOptions, timeoutMs) {
-  return Promise.race([
-    transporter.sendMail(mailOptions),
-    new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('smtp_timeout')), timeoutMs);
-    }),
-  ]);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${RESEND_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from,
+        to: [to],
+        reply_to: replyTo,
+        subject,
+        text,
+        attachments,
+      }),
+      signal: controller.signal,
+    });
+
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok) {
+      const err = new Error(data.message || 'resend_api_error');
+      err.status = res.status;
+      throw err;
+    }
+
+    return data;
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      throw new Error('resend_timeout');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 function field(v) {
@@ -113,26 +149,27 @@ app.post('/api/rfq', (req, res) => {
 
       const replyTo = String(b.qContact || '').includes('@') ? b.qContact : undefined;
 
-      const mailOptions = {
-        from: `"LogiQ — заявки с сайта" <${process.env.SMTP_USER}>`,
+      const attachments = req.file
+        ? [{ filename: req.file.originalname, content: req.file.buffer.toString('base64') }]
+        : [];
+
+      await sendMailViaResend({
         to: RFQ_TO_EMAIL,
+        from: FROM_EMAIL,
         replyTo,
         subject: `Заявка с сайта: ${field(b.qFrom)} → ${field(b.qTo)} (${field(b.qName)})`,
         text: lines.join('\n'),
-        attachments: req.file
-          ? [{ filename: req.file.originalname, content: req.file.buffer }]
-          : [],
-      };
-
-      await sendMailWithTimeout(mailOptions, 20000);
+        attachments,
+      }, 20000);
 
       return res.status(200).json({ ok: true });
     } catch (mailErr) {
       console.error('RFQ send error:', mailErr);
-      const isTimeout = mailErr.message === 'smtp_timeout';
+      const isTimeout = mailErr.message === 'resend_timeout';
+      const notConfigured = mailErr.message === 'resend_not_configured';
       return res.status(isTimeout ? 504 : 500).json({
         ok: false,
-        error: isTimeout ? 'smtp_timeout' : 'server_error',
+        error: notConfigured ? 'resend_not_configured' : (isTimeout ? 'resend_timeout' : 'server_error'),
       });
     }
   });
