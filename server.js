@@ -35,6 +35,19 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+// Если SMTP-сервер не отвечает вовсе (например, хостинг блокирует исходящий
+// порт файрволом) — обычное TCP-соединение может "висеть" несколько минут,
+// прежде чем ОС сама признает таймаут. Это выглядело бы как вечное зависание
+// формы на сайте. Поэтому ограничиваем ожидание сами.
+function sendMailWithTimeout(mailOptions, timeoutMs) {
+  return Promise.race([
+    transporter.sendMail(mailOptions),
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('smtp_timeout')), timeoutMs);
+    }),
+  ]);
+}
+
 function field(v) {
   if (v === undefined || v === null || String(v).trim() === '') return '—';
   return String(v).trim();
@@ -111,12 +124,16 @@ app.post('/api/rfq', (req, res) => {
           : [],
       };
 
-      await transporter.sendMail(mailOptions);
+      await sendMailWithTimeout(mailOptions, 20000);
 
       return res.status(200).json({ ok: true });
     } catch (mailErr) {
       console.error('RFQ send error:', mailErr);
-      return res.status(500).json({ ok: false, error: 'server_error' });
+      const isTimeout = mailErr.message === 'smtp_timeout';
+      return res.status(isTimeout ? 504 : 500).json({
+        ok: false,
+        error: isTimeout ? 'smtp_timeout' : 'server_error',
+      });
     }
   });
 });
