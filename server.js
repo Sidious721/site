@@ -7,7 +7,7 @@ const nodemailer = require('nodemailer');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
-const RFQ_TO_EMAIL = process.env.RFQ_TO_EMAIL || 'logiq.freight@outlook.com';
+const RFQ_TO_EMAIL = process.env.RFQ_TO_EMAIL || 'a.egorov@logiq-freight.com';
 
 app.use(cors({ origin: ALLOWED_ORIGIN }));
 
