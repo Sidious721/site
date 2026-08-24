@@ -6,7 +6,7 @@ const multer = require('multer');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
-const RFQ_TO_EMAIL = process.env.RFQ_TO_EMAIL || 'a.egorov@logiq-freight.com';
+const RFQ_TO_EMAIL = process.env.RFQ_TO_EMAIL || 'info@logiq-freight.com';
 
 // ВАЖНО: письма отправляются через HTTP API Resend (api.resend.com), а НЕ через
 // прямой SMTP. Причина: у бесплатных тарифов большинства облачных хостингов
