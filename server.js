@@ -6,6 +6,12 @@ const multer = require('multer');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
+// Поддерживаем несколько разрешённых доменов через запятую в .env — типичный
+// случай: сайт открывается и с www, и без www, а CORS считает их разными
+// origin'ами. Пример: ALLOWED_ORIGIN=https://logiq-freight.com,https://www.logiq-freight.com
+const allowedOrigins = ALLOWED_ORIGIN === '*'
+  ? '*'
+  : ALLOWED_ORIGIN.split(',').map((o) => o.trim()).filter(Boolean);
 const RFQ_TO_EMAIL = process.env.RFQ_TO_EMAIL || 'info@logiq-freight.com';
 
 // ВАЖНО: письма отправляются через HTTP API Resend (api.resend.com), а НЕ через
@@ -21,7 +27,7 @@ const RESEND_API_KEY = process.env.RESEND_API_KEY;
 // присылать письма можно на любой РЕАЛЬНЫЙ адрес получателя без ограничений.
 const FROM_EMAIL = process.env.FROM_EMAIL || 'LogiQ — заявки с сайта <onboarding@resend.dev>';
 
-app.use(cors({ origin: ALLOWED_ORIGIN }));
+app.use(cors({ origin: allowedOrigins }));
 
 // Файл храним в памяти (не пишем на диск) и сразу прикладываем к письму
 const ALLOWED_EXTENSIONS = ['pdf', 'jpg', 'jpeg', 'png', 'xlsx', 'xls', 'doc', 'docx'];
